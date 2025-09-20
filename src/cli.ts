@@ -14,13 +14,33 @@ import { PID_FILE, REFERENCE_COUNT_FILE } from "./constants";
 import fs, { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
+
+const resolveCliJsPath = () => {
+  const p1 = join(__dirname, "cli.js");
+  if (existsSync(p1)) return p1;
+  const p2 = join(__dirname, "../dist/cli.js");
+  return p2;
+};
+
+const getStartSpawn = () => {
+  // Dev mode: spawn tsx with TS source if explicitly requested
+  if (process.env.CCR_SPAWN_TSX === "1" || process.env.CCR_DEV === "tsx") {
+    const tsEntry = join(__dirname, "../src/cli.ts");
+    return { cmd: "npx", args: ["tsx", tsEntry, "start"] as string[] };
+  }
+  // Default: spawn built dist
+  const cliPath = resolveCliJsPath();
+  return { cmd: "node", args: [cliPath, "start"] as string[] };
+};
+
+
 const command = process.argv[2];
 
 const HELP_TEXT = `
 Usage: ccr [command]
 
 Commands:
-  start         Start server 
+  start         Start server
   stop          Stop server
   restart       Restart server
   status        Show server status
@@ -112,8 +132,8 @@ async function main() {
     case "code":
       if (!isRunning) {
         console.log("Service not running, starting service...");
-        const cliPath = join(__dirname, "cli.js");
-        const startProcess = spawn("node", [cliPath, "start"], {
+        const { cmd: _cmd1, args: _args1 } = getStartSpawn();
+        const startProcess = spawn(_cmd1, _args1, {
           detached: true,
           stdio: "ignore",
         });
@@ -157,8 +177,8 @@ async function main() {
       // Check if service is running
       if (!isRunning) {
         console.log("Service not running, starting service...");
-        const cliPath = join(__dirname, "cli.js");
-        const startProcess = spawn("node", [cliPath, "start"], {
+        const { cmd: _cmd2, args: _args2 } = getStartSpawn();
+        const startProcess = spawn(_cmd2, _args2, {
           detached: true,
           stdio: "ignore",
         });
@@ -179,7 +199,7 @@ async function main() {
             initDir,
             writeConfigFile,
             backupConfigFile,
-          } = require("./utils");
+          } = await import("./utils/index.js");
 
           try {
             // Initialize directories
@@ -207,7 +227,8 @@ async function main() {
             );
 
             // Try starting the service again
-            const restartProcess = spawn("node", [cliPath, "start"], {
+            const { cmd: _cmd3, args: _args3 } = getStartSpawn();
+            const restartProcess = spawn(_cmd3, _args3, {
               detached: true,
               stdio: "ignore",
             });
@@ -297,8 +318,9 @@ async function main() {
 
       // Start the service again in the background
       console.log("Starting claude code router service...");
-      const cliPath = join(__dirname, "cli.js");
-      const startProcess = spawn("node", [cliPath, "start"], {
+      const cliPath = resolveCliJsPath();
+      const { cmd: _cmd4, args: _args4 } = getStartSpawn();
+      const startProcess = spawn(_cmd4, _args4, {
         detached: true,
         stdio: "ignore",
       });
