@@ -22,8 +22,11 @@ import JSON5 from "json5";
 import { IAgent } from "./agents/type";
 import agentsManager from "./agents";
 import { EventEmitter } from "node:events";
+import { selectKeyForProvider, advanceOnSuccess, markKeyDisabled, shouldDisableForStatus } from "./utils/keyRotation";
+
 
 const event = new EventEmitter()
+
 
 async function initializeClaudeConfig() {
   const homeDir = homedir();
@@ -122,11 +125,24 @@ async function run(options: RunOptions = {}) {
         }
       : false;
 
+
+  // Normalize providers: if api_keys present, use the first key as api_key
+  const rawProviders = (config.Providers || config.providers) as any[];
+  const normalizedProviders = Array.isArray(rawProviders)
+    ? rawProviders.map((p: any) => {
+        const first = Array.isArray(p?.api_keys) && p.api_keys.length > 0 ? p.api_keys[0] : null;
+        if (first?.key) {
+          return { ...p, api_key: first.key };
+        }
+        return p;
+      })
+    : rawProviders;
+
   const server = createServer({
     jsonPath: CONFIG_FILE,
     initialConfig: {
       // ...config,
-      providers: config.Providers || config.providers,
+      providers: normalizedProviders,
       HOST: HOST,
       PORT: servicePort,
       LOG_FILE: join(
@@ -143,6 +159,47 @@ async function run(options: RunOptions = {}) {
     server.log.error("Uncaught exception:", err);
   });
 
+
+  // Log default provider and model at startup
+  try {
+    const def = (config?.Router && (config.Router as any).default) as any;
+    let providerName = "unknown";
+    let modelName = "unknown";
+    if (typeof def === "string" && def.trim()) {
+      if (def.includes(",")) {
+        const [prov, mod] = def.split(",").map(s => s.trim());
+        providerName = prov || providerName;
+        modelName = mod || modelName;
+      } else {
+        modelName = def.trim();
+        // infer provider from Providers list
+        const prov = (config.Providers || config.providers || []).find((p: any) =>
+          Array.isArray(p?.models) && p.models.some((m: any) => String(m).toLowerCase() === String(modelName).toLowerCase())
+        );
+        if (prov?.name) providerName = prov.name;
+      }
+    }
+    const _startupMsg = `Using provider: ${providerName}, model: ${modelName}`;
+    try { (server as any)?.app?.log?.info?.({ provider: providerName, model: modelName }, _startupMsg); } catch {}
+    console.log(_startupMsg);
+  } catch {}
+
+  // Log provider api_key names (do NOT log keys)
+  try {
+    const providers = (config.Providers || config.providers || []) as any[];
+    for (const p of providers) {
+      const names = Array.isArray(p?.api_keys)
+        ? p.api_keys.map((k: any) => k?.name).filter(Boolean)
+        : [];
+      if (p?.name && names.length) {
+        const msg = `Provider ${p.name} api_keys: ${names.join(", ")}`;
+        try { (server as any)?.app?.log?.info?.({ provider: p.name, api_key_names: names }, msg); } catch {}
+        console.log(msg);
+      }
+    }
+  } catch {}
+
+
   process.on("unhandledRejection", (reason, promise) => {
     server.log.error("Unhandled rejection at:", promise, "reason:", reason);
   });
@@ -155,6 +212,7 @@ async function run(options: RunOptions = {}) {
       };
       // Call the async auth function
       apiKeyAuth(config)(req, reply, done).catch(reject);
+
     });
   });
   server.addHook("preHandler", async (req, reply) => {
@@ -194,7 +252,69 @@ async function run(options: RunOptions = {}) {
       });
     }
   });
+  // Round-robin api_keys per provider on each /v1/messages request
+  server.addHook("preHandler", async (req, _reply) => {
+    try {
+      if (!req.url.startsWith("/v1/messages")) return;
+      const providersList = (config.Providers || config.providers || []) as any[];
+
+      // Determine provider name for this request
+      const bodyModel: string | undefined = req.body?.model;
+      const def: string | undefined = (config?.Router && (config.Router as any).default) as any;
+      const getProviderByModel = (model: string | undefined) => {
+        if (!model) return undefined;
+        if (model.includes(",")) {
+          const [prov] = model.split(",").map((s: string) => s.trim());
+          return providersList.find((p: any) => String(p?.name).toLowerCase() === prov.toLowerCase());
+        }
+        return providersList.find(
+          (p: any) => Array.isArray(p?.models) && p.models.some((m: any) => String(m).toLowerCase() === String(model).toLowerCase())
+        );
+      };
+
+      let provider = getProviderByModel(bodyModel) || getProviderByModel(def);
+      if (!provider) return; // unknown provider
+
+      if (Array.isArray(provider.api_keys) && provider.api_keys.length > 0) {
+        const provName: string = provider.name;
+        const { selected, chosenIndex, total, usedKeyId, allDisabled } = selectKeyForProvider(provider as any);
+
+        // Track which key we used for this request (for error handling)
+        (req as any)._ccrProviderName = provName;
+        (req as any)._ccrUsedKeyId = usedKeyId;
+        (req as any)._ccrChosenIndex = chosenIndex;
+        (req as any)._ccrKeyTotal = total;
+
+        // Update live provider apiKey in providerService
+        try {
+          server.app._server?.providerService?.updateProvider(provName, { apiKey: (selected as any)?.key });
+          // Log only the name (never the key)
+          server.app.log.info({ provider: provName, api_key_name: (selected as any)?.name }, "Using rotated api_key for provider");
+          if (allDisabled) {
+            server.app.log.warn({ provider: provName }, "All api_keys appear disabled for this provider; using next in rotation anyway.");
+          }
+        } catch {}
+      }
+    } catch {}
+  });
+
   server.addHook("onError", async (request, reply, error) => {
+    try {
+      if ((request as any).url?.startsWith("/v1/messages")) {
+        const status = (reply as any)?.statusCode || (error as any)?.statusCode || (error as any)?.status;
+        // Simplified policy: allow 429 (rate limits); for any other 4xx, disable this key in router and surface error for manual handling
+        const shouldDisable = shouldDisableForStatus(status);
+        if (shouldDisable) {
+          const prov = (request as any)._ccrProviderName;
+          const keyId = (request as any)._ccrUsedKeyId;
+          if (prov && keyId) {
+            markKeyDisabled(prov, String(keyId));
+            server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "Disabled api_key due to non-429 4xx error (onError)");
+          }
+        }
+      }
+    } catch {}
+
     event.emit('onError', request, reply, error);
   })
   server.addHook("onSend", (req, reply, payload, done) => {
@@ -355,19 +475,50 @@ async function run(options: RunOptions = {}) {
           }
         }
         read(clonedStream);
+        // Advance rotation index only on successful responses
+        try {
+          const prov = (req as any)._ccrProviderName;
+          const chosen = (req as any)._ccrChosenIndex;
+          const total = (req as any)._ccrKeyTotal;
+          advanceOnSuccess(prov, chosen, total);
+        } catch {}
         return done(null, originalStream)
       }
       sessionUsageCache.put(req.sessionId, payload.usage);
-      if (typeof payload ==='object') {
-        if (payload.error) {
-          return done(payload.error, null)
+      if (typeof payload === 'object') {
+        if ((payload as any).error) {
+          try {
+            const status = reply.statusCode;
+            const err = (payload as any).error;
+            // Simplified policy: allow 429 (rate limits); for any other 4xx, disable this key in router and surface error for manual handling
+            const shouldDisable = shouldDisableForStatus(status);
+            if (shouldDisable) {
+              const prov = (req as any)._ccrProviderName;
+              const keyId = (req as any)._ccrUsedKeyId;
+              if (prov && keyId) {
+                markKeyDisabled(prov, String(keyId));
+                server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "Disabled api_key due to non-429 4xx error");
+                if (err?.message && typeof err.message === 'string') {
+                  err.message += ` [CCR hint] The API key (${keyId}) encountered a non-429 4xx error and has been temporarily disabled in the router. Please remove or fix this key in your configuration.`;
+                }
+              }
+            }
+          } catch {}
+          return done((payload as any).error, null);
         } else {
-          return done(payload, null)
+          // Advance rotation index only on successful responses
+          try {
+            const prov = (req as any)._ccrProviderName;
+            const chosen = (req as any)._ccrChosenIndex;
+            const total = (req as any)._ccrKeyTotal;
+            advanceOnSuccess(prov, chosen, total);
+          } catch {}
+          return done(payload, null);
         }
       }
     }
-    if (typeof payload ==='object' && payload.error) {
-      return done(payload.error, null)
+    if (typeof payload === 'object' && (payload as any).error) {
+      return done((payload as any).error, null);
     }
     done(null, payload)
   });
