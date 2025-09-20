@@ -1,6 +1,6 @@
 {
-  "name": "@musistudio/claude-code-router",
-  "version": "1.0.49",
+  "name": "@vitorcen/ccr-multi-key",
+  "version": "1.0.49-dev",
   "description": "Use Claude Code without an Anthropics account and route it to another LLM provider",
   "bin": {
     "ccr": "./dist/cli.js"
