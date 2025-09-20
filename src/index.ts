@@ -2,7 +2,7 @@ import { existsSync } from "fs";
 import { writeFile } from "fs/promises";
 import { homedir } from "os";
 import path, { join } from "path";
-import { initConfig, initDir, cleanupLogFiles } from "./utils";
+import { initConfig, initDir, cleanupLogFiles, getConfigPath } from "./utils";
 import { createServer } from "./server";
 import { router } from "./utils/router";
 import { apiKeyAuth } from "./middleware/auth";
@@ -22,7 +22,9 @@ import JSON5 from "json5";
 import { IAgent } from "./agents/type";
 import agentsManager from "./agents";
 import { EventEmitter } from "node:events";
-import { selectKeyForProvider, advanceOnSuccess, markKeyDisabled, shouldDisableForStatus } from "./utils/keyRotation";
+import { selectKeyForProvider, advanceOnSuccess, markKeyDisabled, shouldDisableForStatus, getKeyId, findKeyIndexById } from "./utils/keyRotation";
+import { updateKeyMetrics } from "./utils/keyMetrics";
+
 
 
 const event = new EventEmitter()
@@ -139,7 +141,7 @@ async function run(options: RunOptions = {}) {
     : rawProviders;
 
   const server = createServer({
-    jsonPath: CONFIG_FILE,
+    jsonPath: getConfigPath(),
     initialConfig: {
       // ...config,
       providers: normalizedProviders,
@@ -156,7 +158,8 @@ async function run(options: RunOptions = {}) {
 
   // Add global error handlers to prevent the service from crashing
   process.on("uncaughtException", (err) => {
-    server.log.error("Uncaught exception:", err);
+    try { (server as any)?.log?.error?.("Uncaught exception:", err); } catch {}
+    console.error("Uncaught exception:", err);
   });
 
 
@@ -201,7 +204,8 @@ async function run(options: RunOptions = {}) {
 
 
   process.on("unhandledRejection", (reason, promise) => {
-    server.log.error("Unhandled rejection at:", promise, "reason:", reason);
+    try { (server as any)?.log?.error?.("Unhandled rejection at:", promise, "reason:", reason); } catch {}
+    console.error("Unhandled rejection at:", promise, "reason:", reason);
   });
   // Add async preHandler hook for authentication
   server.addHook("preHandler", async (req, reply) => {
@@ -277,23 +281,39 @@ async function run(options: RunOptions = {}) {
 
       if (Array.isArray(provider.api_keys) && provider.api_keys.length > 0) {
         const provName: string = provider.name;
-        const { selected, chosenIndex, total, usedKeyId, allDisabled } = selectKeyForProvider(provider as any);
+        const lockKeyId = (req.headers as any)["x-ccr-lock-key-id"] as string | undefined;
+        const lockProv = (req.headers as any)["x-ccr-lock-provider"] as string | undefined;
 
-        // Track which key we used for this request (for error handling)
-        (req as any)._ccrProviderName = provName;
-        (req as any)._ccrUsedKeyId = usedKeyId;
-        (req as any)._ccrChosenIndex = chosenIndex;
-        (req as any)._ccrKeyTotal = total;
+        if (lockKeyId && lockProv && String(lockProv).toLowerCase() === String(provName).toLowerCase()) {
+          // Use the locked key for this request (no rotation)
+          const idx = findKeyIndexById(provider as any, lockKeyId);
+          const chosenIndex = idx >= 0 ? idx : 0;
+          const selected = provider.api_keys[chosenIndex];
+          const total = provider.api_keys.length;
+          const usedKeyId = getKeyId(selected as any);
 
-        // Update live provider apiKey in providerService
-        try {
-          server.app._server?.providerService?.updateProvider(provName, { apiKey: (selected as any)?.key });
-          // Log only the name (never the key)
-          server.app.log.info({ provider: provName, api_key_name: (selected as any)?.name }, "Using rotated api_key for provider");
-          if (allDisabled) {
-            server.app.log.warn({ provider: provName }, "All api_keys appear disabled for this provider; using next in rotation anyway.");
-          }
-        } catch {}
+          (req as any)._ccrProviderName = provName;
+          (req as any)._ccrUsedKeyId = usedKeyId;
+          (req as any)._ccrChosenIndex = chosenIndex;
+          (req as any)._ccrKeyTotal = total;
+          try {
+            server.app._server?.providerService?.updateProvider(provName, { apiKey: (selected as any)?.key });
+            server.app.log.info({ provider: provName, api_key_name: (selected as any)?.name }, "Using locked api_key for provider");
+          } catch {}
+        } else {
+          const { selected, chosenIndex, total, usedKeyId, allDisabled } = selectKeyForProvider(provider as any);
+          (req as any)._ccrProviderName = provName;
+          (req as any)._ccrUsedKeyId = usedKeyId;
+          (req as any)._ccrChosenIndex = chosenIndex;
+          (req as any)._ccrKeyTotal = total;
+          try {
+            server.app._server?.providerService?.updateProvider(provName, { apiKey: (selected as any)?.key });
+            server.app.log.info({ provider: provName, api_key_name: (selected as any)?.name }, "Using rotated api_key for provider");
+            if (allDisabled) {
+              server.app.log.warn({ provider: provName }, "All api_keys appear disabled for this provider; using next in rotation anyway.");
+            }
+          } catch {}
+        }
       }
     } catch {}
   });
@@ -301,15 +321,34 @@ async function run(options: RunOptions = {}) {
   server.addHook("onError", async (request, reply, error) => {
     try {
       if ((request as any).url?.startsWith("/v1/messages")) {
-        const status = (reply as any)?.statusCode || (error as any)?.statusCode || (error as any)?.status;
+        // Derive a robust status code from reply or error
+        const rawCandidates = [(reply as any)?.statusCode, (error as any)?.statusCode, (error as any)?.status, (error as any)?.httpStatus, (error as any)?.http_status];
+        let status = Number(rawCandidates.find((s: any) => typeof s === 'number' && s >= 400 && s < 600));
+        if (!status || !(status >= 400 && status < 600)) {
+          const text = JSON.stringify(error || {});
+          const m = text.match(/\b(4\d{2})\b/);
+          if (m) status = Number(m[1]);
+        }
+        if (!status || !(status >= 400 && status < 600)) status = 400;
         // Simplified policy: allow 429 (rate limits); for any other 4xx, disable this key in router and surface error for manual handling
         const shouldDisable = shouldDisableForStatus(status);
         if (shouldDisable) {
           const prov = (request as any)._ccrProviderName;
           const keyId = (request as any)._ccrUsedKeyId;
           if (prov && keyId) {
-            markKeyDisabled(prov, String(keyId));
-            server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "Disabled api_key due to non-429 4xx error (onError)");
+            server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "4xx (non-429) error (onError); keeping same key; letting client/system retry");
+            // Persist failure metrics (onError path)
+            try {
+              const inTokens = Number((request as any).tokenCount ?? (request as any)._ccrInTokens ?? 0);
+              const msg = typeof (error as any)?.message === 'string' ? (error as any).message : JSON.stringify(error || {});
+              await updateKeyMetrics(prov, String(keyId), {
+                req_count: 1,
+                req_tokens: inTokens,
+                err_code: status,
+                err_msg: msg,
+              });
+            } catch {}
+
           }
         }
       }
@@ -462,6 +501,9 @@ async function run(options: RunOptions = {}) {
               try {
                 const message = JSON.parse(str);
                 sessionUsageCache.put(req.sessionId, message.usage);
+                // Capture usage for metrics
+                (req as any)._ccrInTokens = (message.usage?.input_tokens ?? (req as any)._ccrInTokens) || 0;
+                (req as any)._ccrRspTokens = (message.usage?.output_tokens ?? (req as any)._ccrRspTokens) || 0;
               } catch {}
             }
           } catch (readError: any) {
@@ -472,6 +514,22 @@ async function run(options: RunOptions = {}) {
             }
           } finally {
             reader.releaseLock();
+            // After stream read completes, persist success metrics
+            try {
+              const prov = (req as any)._ccrProviderName;
+              const keyId = (req as any)._ccrUsedKeyId;
+              const inTokens = Number((req as any).tokenCount ?? (req as any)._ccrInTokens ?? 0);
+              const outTokens = Number((req as any)._ccrRspTokens ?? 0);
+              if (prov && keyId) {
+                updateKeyMetrics(prov, keyId, {
+                  req_count: 1,
+                  req_tokens: inTokens,
+                  rsp_tokens: outTokens,
+                  err_code: 0,
+                  err_msg: "",
+                }).catch(() => {});
+              }
+            } catch {}
           }
         }
         read(clonedStream);
@@ -488,24 +546,59 @@ async function run(options: RunOptions = {}) {
       if (typeof payload === 'object') {
         if ((payload as any).error) {
           try {
-            const status = reply.statusCode;
             const err = (payload as any).error;
+            // Derive a robust status code from reply or error payload
+            const rawCandidates = [reply?.statusCode, err?.status, err?.statusCode, err?.httpStatus, err?.http_status];
+            let status = Number(rawCandidates.find((s: any) => typeof s === 'number' && s >= 400 && s < 600));
+            if (!status || !(status >= 400 && status < 600)) {
+              const text = JSON.stringify(err || {});
+              const m = text.match(/\b(4\d{2})\b/);
+              if (m) status = Number(m[1]);
+            }
+            if (!status || !(status >= 400 && status < 600)) status = 400;
             // Simplified policy: allow 429 (rate limits); for any other 4xx, disable this key in router and surface error for manual handling
             const shouldDisable = shouldDisableForStatus(status);
             if (shouldDisable) {
               const prov = (req as any)._ccrProviderName;
               const keyId = (req as any)._ccrUsedKeyId;
+              // No internal retry; let client/system retry. Do not rotate key.
+
+
               if (prov && keyId) {
-                markKeyDisabled(prov, String(keyId));
-                server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "Disabled api_key due to non-429 4xx error");
-                if (err?.message && typeof err.message === 'string') {
-                  err.message += ` [CCR hint] The API key (${keyId}) encountered a non-429 4xx error and has been temporarily disabled in the router. Please remove or fix this key in your configuration.`;
-                }
+                try {
+                  server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "4xx (non-429) error; keeping same key; letting client/system retry");
+                  const inTokens = Number((req as any).tokenCount ?? (req as any)._ccrInTokens ?? 0);
+                  const msg = typeof err?.message === 'string' ? err.message : String(err);
+                  updateKeyMetrics(prov, String(keyId), {
+                    req_count: 1,
+                    req_tokens: inTokens,
+                    err_code: status,
+                    err_msg: msg,
+                  }).catch(() => {});
+                } catch {}
               }
+
             }
           } catch {}
           return done((payload as any).error, null);
         } else {
+          // Persist success metrics for non-stream responses
+          try {
+            const prov = (req as any)._ccrProviderName;
+            const keyId = (req as any)._ccrUsedKeyId;
+            const usage = (payload as any)?.usage || {};
+            const inTokens = Number((req as any).tokenCount ?? usage.input_tokens ?? 0);
+            const outTokens = Number(usage.output_tokens ?? 0);
+            if (prov && keyId) {
+              updateKeyMetrics(prov, keyId, {
+                req_count: 1,
+                req_tokens: inTokens,
+                rsp_tokens: outTokens,
+                err_code: 0,
+                err_msg: "",
+              }).catch(() => {});
+            }
+          } catch {}
           // Advance rotation index only on successful responses
           try {
             const prov = (req as any)._ccrProviderName;

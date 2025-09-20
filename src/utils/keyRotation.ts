@@ -55,6 +55,16 @@ export function selectKeyForProvider(provider: ProviderLike): {
   return { selected, chosenIndex: index, total, usedKeyId, allDisabled };
 }
 
+export function findKeyIndexById(provider: ProviderLike, usedKeyId: string): number {
+  const total = Array.isArray(provider.api_keys) ? provider.api_keys.length : 0;
+  if (total === 0) return -1;
+  for (let i = 0; i < total; i++) {
+    const cand = provider.api_keys[i];
+    if (getKeyId(cand) === usedKeyId) return i;
+  }
+  return -1;
+}
+
 export function advanceOnSuccess(providerName: string, chosenIndex: number, total: number) {
   if (!providerName || !Number.isInteger(chosenIndex) || !Number.isInteger(total) || total <= 0) return;
   providerKeyIndex.set(providerName, ((chosenIndex as number) + 1) % (total as number));

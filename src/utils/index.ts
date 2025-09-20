@@ -11,6 +11,11 @@ import {
 import { cleanupLogFiles } from "./logCleanup";
 
 // Function to interpolate environment variables in config values
+// Allow overriding config path via env var (e.g., set by CLI --config)
+export const getConfigPath = (): string => {
+  return process.env.CCR_CONFIG || CONFIG_FILE;
+};
+
 const interpolateEnvVars = (obj: any): any => {
   if (typeof obj === "string") {
     // Replace $VAR_NAME or ${VAR_NAME} with environment variable values
@@ -68,7 +73,7 @@ const confirm = async (query: string): Promise<boolean> => {
 
 export const readConfigFile = async () => {
   try {
-    const config = await fs.readFile(CONFIG_FILE, "utf-8");
+    const config = await fs.readFile(getConfigPath(), "utf-8");
     try {
       // Try to parse with JSON5 first (which also supports standard JSON)
       const parsedConfig = JSON5.parse(config);
@@ -116,7 +121,7 @@ export const readConfigFile = async () => {
         process.exit(1);
       }
     } else {
-      console.error(`Failed to read config file at ${CONFIG_FILE}`);
+      console.error(`Failed to read config file at ${getConfigPath()}`);
       console.error("Error details:", readError.message);
       process.exit(1);
     }
@@ -125,15 +130,16 @@ export const readConfigFile = async () => {
 
 export const backupConfigFile = async () => {
   try {
-    if (await fs.access(CONFIG_FILE).then(() => true).catch(() => false)) {
+    const cfgPath = getConfigPath();
+    if (await fs.access(cfgPath).then(() => true).catch(() => false)) {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const backupPath = `${CONFIG_FILE}.${timestamp}.bak`;
-      await fs.copyFile(CONFIG_FILE, backupPath);
+      const backupPath = `${cfgPath}.${timestamp}.bak`;
+      await fs.copyFile(cfgPath, backupPath);
 
       // Clean up old backups, keeping only the 3 most recent
       try {
-        const configDir = path.dirname(CONFIG_FILE);
-        const configFileName = path.basename(CONFIG_FILE);
+        const configDir = path.dirname(cfgPath);
+        const configFileName = path.basename(cfgPath);
         const files = await fs.readdir(configDir);
 
         // Find all backup files for this config
@@ -162,9 +168,10 @@ export const backupConfigFile = async () => {
 };
 
 export const writeConfigFile = async (config: any) => {
-  await ensureDir(HOME_DIR);
+  const cfgPath = getConfigPath();
+  await ensureDir(path.dirname(cfgPath));
   const configWithComment = `${JSON.stringify(config, null, 2)}`;
-  await fs.writeFile(CONFIG_FILE, configWithComment);
+  await fs.writeFile(cfgPath, configWithComment);
 };
 
 export const initConfig = async () => {

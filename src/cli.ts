@@ -80,7 +80,25 @@ async function main() {
   const isRunning = await isServiceRunning()
   switch (command) {
     case "start":
-      run();
+      {
+        const args = process.argv.slice(3);
+        // Support --config path or --config=path (and -c path)
+        let cfgPath: string | undefined;
+        for (let i = 0; i < args.length; i++) {
+          const a = args[i];
+          if (a === "--config" || a === "-c") {
+            cfgPath = args[i + 1];
+            i++;
+          } else if (a.startsWith("--config=")) {
+            cfgPath = a.slice("--config=".length);
+          }
+        }
+        if (cfgPath) {
+          process.env.CCR_CONFIG = cfgPath;
+          console.log(`Using config file: ${cfgPath}`);
+        }
+        run();
+      }
       break;
     case "stop":
       try {
