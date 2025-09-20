@@ -34,7 +34,29 @@ const getStartSpawn = () => {
 };
 
 
-const command = process.argv[2];
+// Global option parsing: support --config/-c anywhere before/after the command
+const rawArgs = process.argv.slice(2);
+let cfgPath: string | undefined;
+const filteredArgs: string[] = [];
+for (let i = 0; i < rawArgs.length; i++) {
+  const a = rawArgs[i];
+  if (a === "--config" || a === "-c") {
+    cfgPath = rawArgs[i + 1];
+    i++;
+    continue;
+  }
+  if (a.startsWith("--config=")) {
+    cfgPath = a.slice("--config=".length);
+    continue;
+  }
+  filteredArgs.push(a);
+}
+if (cfgPath) {
+  process.env.CCR_CONFIG = cfgPath;
+  console.log(`Using config file: ${cfgPath}`);
+}
+const command = filteredArgs[0];
+const commandArgs = filteredArgs.slice(1);
 
 const HELP_TEXT = `
 Usage: ccr [command]
@@ -80,25 +102,7 @@ async function main() {
   const isRunning = await isServiceRunning()
   switch (command) {
     case "start":
-      {
-        const args = process.argv.slice(3);
-        // Support --config path or --config=path (and -c path)
-        let cfgPath: string | undefined;
-        for (let i = 0; i < args.length; i++) {
-          const a = args[i];
-          if (a === "--config" || a === "-c") {
-            cfgPath = args[i + 1];
-            i++;
-          } else if (a.startsWith("--config=")) {
-            cfgPath = a.slice("--config=".length);
-          }
-        }
-        if (cfgPath) {
-          process.env.CCR_CONFIG = cfgPath;
-          console.log(`Using config file: ${cfgPath}`);
-        }
-        run();
-      }
+      run();
       break;
     case "stop":
       try {
@@ -177,8 +181,7 @@ async function main() {
 
         if (await waitForService()) {
           // Join all code arguments into a single string to preserve spaces within quotes
-          const codeArgs = process.argv.slice(3);
-          executeCodeCommand(codeArgs);
+          executeCodeCommand(commandArgs);
         } else {
           console.error(
             "Service startup timeout, please manually run `ccr start` to start the service"
@@ -187,8 +190,7 @@ async function main() {
         }
       } else {
         // Join all code arguments into a single string to preserve spaces within quotes
-        const codeArgs = process.argv.slice(3);
-        executeCodeCommand(codeArgs);
+        executeCodeCommand(commandArgs);
       }
       break;
     case "ui":
