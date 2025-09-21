@@ -8,6 +8,20 @@ export type KeyMetricsDelta = {
   rsp_tokens?: number; // output tokens to add
   err_code?: number | null; // set on error; clear on success if desired
   err_msg?: string | null; // set on error; clear on success if desired
+  req_today?: number; // typically +1
+  last_req_ts?: number; // seconds since epoch
+};
+
+// Helper to check if two unix timestamps (in seconds) are on the same calendar day in local time
+const isSameDay = (ts1: number, ts2: number): boolean => {
+  if (!ts1 || !ts2) return false;
+  const d1 = new Date(ts1 * 1000);
+  const d2 = new Date(ts2 * 1000);
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
 };
 
 export async function updateKeyMetrics(
@@ -42,8 +56,19 @@ export async function updateKeyMetrics(
   entry.req_count = Number(entry.req_count || 0);
   entry.req_tokens = Number(entry.req_tokens || 0);
   entry.rsp_tokens = Number(entry.rsp_tokens || 0);
+  entry.req_today = Number(entry.req_today || 0);
+  entry.last_req_ts = Number(entry.last_req_ts || 0);
 
-  if (typeof delta.req_count === "number") entry.req_count += delta.req_count;
+  const now = Math.floor(Date.now() / 1000);
+  if (!isSameDay(entry.last_req_ts, now)) {
+    entry.req_today = 0;
+  }
+  entry.last_req_ts = now;
+
+  if (typeof delta.req_count === "number") {
+    entry.req_count += delta.req_count;
+    entry.req_today += delta.req_count;
+  }
   if (typeof delta.req_tokens === "number") entry.req_tokens += delta.req_tokens;
   if (typeof delta.rsp_tokens === "number") entry.rsp_tokens += delta.rsp_tokens;
 
