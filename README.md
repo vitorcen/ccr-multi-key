@@ -1,3 +1,6 @@
+
+[中文 README](README_zh.md)
+
 # Claude Code Router (fork)
 
 Forked from: https://github.com/musistudio/claude-code-router
@@ -19,7 +22,7 @@ npm install -g @vitorcen/ccr-multi-key
 ## CLI
 
 - Use a custom config file anywhere in command:
-  `ccrm -c /path/to/config.json code "..."` 
+  `ccrm -c /path/to/config.json code "..."`
   or `ccrm code --config=/path/to/config.json "..."`
 - The router will write metrics back to that same file.
 
@@ -58,6 +61,8 @@ npm install -g @vitorcen/ccr-multi-key
           "req_count": 3,
           "req_tokens": 74196,
           "rsp_tokens": 695,
+          "req_today": 3,
+          "last_req_ts": 1727000000,
           "err_code": 0,
           "err_msg": ""
         },
@@ -67,6 +72,8 @@ npm install -g @vitorcen/ccr-multi-key
           "req_count": 2,
           "req_tokens": 1580,
           "rsp_tokens": 0,
+          "req_today": 2,
+          "last_req_ts": 1727000000,
           "err_code": 401,
           "err_msg": "Error from provider(,... 401): No auth credentials found"
         },
@@ -76,6 +83,8 @@ npm install -g @vitorcen/ccr-multi-key
           "req_count": 1,
           "req_tokens": 980,
           "rsp_tokens": 120,
+          "req_today": 1,
+          "last_req_ts": 1727000000,
           "err_code": 0,
           "err_msg": ""
         }
