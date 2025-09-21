@@ -330,17 +330,26 @@ async function run(options: RunOptions = {}) {
           if (m) status = Number(m[1]);
         }
         if (!status || !(status >= 400 && status < 600)) status = 400;
-        // Simplified policy: allow 429 (rate limits); for any other 4xx, disable this key in router and surface error for manual handling
         const shouldDisable = shouldDisableForStatus(status);
-        if (shouldDisable) {
-          const prov = (request as any)._ccrProviderName;
-          const keyId = (request as any)._ccrUsedKeyId;
+        const prov = (request as any)._ccrProviderName;
+        const keyId = (request as any)._ccrUsedKeyId;
+        const chosenIdx = Number((request as any)._ccrChosenIndex ?? -1);
+        const total = Number((request as any)._ccrKeyTotal ?? 0);
+
+        if (status === 429) {
+          try {
+            if (prov && Number.isInteger(chosenIdx) && total > 0) {
+              advanceOnSuccess(prov, chosenIdx, total);
+              server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "429 rate limit (onError); advancing rotation index; letting client/system retry");
+            }
+          } catch {}
+        } else if (shouldDisable) {
           if (prov && keyId) {
-            server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "4xx (non-429) error (onError); keeping same key; letting client/system retry");
-            // Persist failure metrics (onError path)
+            // Persist failure metrics (onError path) and log original message for debugging
             try {
               const inTokens = Number((request as any).tokenCount ?? (request as any)._ccrInTokens ?? 0);
               const msg = typeof (error as any)?.message === 'string' ? (error as any).message : JSON.stringify(error || {});
+              server.app.log.warn({ provider: prov, api_key_id: keyId, status, orig_msg: msg }, "4xx (non-429) error (onError); keeping same key; letting client/system retry");
               await updateKeyMetrics(prov, String(keyId), {
                 req_count: 1,
                 req_tokens: inTokens,
@@ -348,7 +357,6 @@ async function run(options: RunOptions = {}) {
                 err_msg: msg,
               });
             } catch {}
-
           }
         }
       }
@@ -556,19 +564,41 @@ async function run(options: RunOptions = {}) {
               if (m) status = Number(m[1]);
             }
             if (!status || !(status >= 400 && status < 600)) status = 400;
-            // Simplified policy: allow 429 (rate limits); for any other 4xx, disable this key in router and surface error for manual handling
+            // Rotation policy:
+            // - 429: rotate to next key within this request and retry immediately
+            // - other 4xx: keep the same key; let client/system handle retries; log original message
             const shouldDisable = shouldDisableForStatus(status);
-            if (shouldDisable) {
-              const prov = (req as any)._ccrProviderName;
-              const keyId = (req as any)._ccrUsedKeyId;
-              // No internal retry; let client/system retry. Do not rotate key.
+            const prov = (req as any)._ccrProviderName;
+            const keyId = (req as any)._ccrUsedKeyId;
+            const chosenIdx = Number((req as any)._ccrChosenIndex ?? -1);
+            const total = Number((req as any)._ccrKeyTotal ?? 0);
 
-
+            if (status === 429) {
+              // Do not internally retry; advance rotation so the next request uses the next key
+              try {
+                const inTokens = Number((req as any).tokenCount ?? (req as any)._ccrInTokens ?? 0);
+                const msg = typeof err?.message === 'string' ? err.message : String(err);
+                if (prov && keyId) {
+                  updateKeyMetrics(prov, String(keyId), {
+                    req_count: 1,
+                    req_tokens: inTokens,
+                    err_code: status,
+                    err_msg: msg,
+                  }).catch(() => {});
+                }
+              } catch {}
+              try {
+                if (prov && Number.isInteger(chosenIdx) && total > 0) {
+                  advanceOnSuccess(prov, chosenIdx, total);
+                  server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "429 rate limit; advancing rotation index; letting client/system retry");
+                }
+              } catch {}
+            } else if (shouldDisable) {
               if (prov && keyId) {
                 try {
-                  server.app.log.warn({ provider: prov, api_key_id: keyId, status }, "4xx (non-429) error; keeping same key; letting client/system retry");
                   const inTokens = Number((req as any).tokenCount ?? (req as any)._ccrInTokens ?? 0);
                   const msg = typeof err?.message === 'string' ? err.message : String(err);
+                  server.app.log.warn({ provider: prov, api_key_id: keyId, status, orig_msg: msg }, "4xx (non-429) error; keeping same key; letting client/system retry");
                   updateKeyMetrics(prov, String(keyId), {
                     req_count: 1,
                     req_tokens: inTokens,
@@ -577,7 +607,6 @@ async function run(options: RunOptions = {}) {
                   }).catch(() => {});
                 } catch {}
               }
-
             }
           } catch {}
           return done((payload as any).error, null);
