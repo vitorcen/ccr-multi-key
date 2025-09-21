@@ -59,7 +59,7 @@ const command = filteredArgs[0];
 const commandArgs = filteredArgs.slice(1);
 
 const HELP_TEXT = `
-Usage: ccr [command]
+Usage: ccrm [command] [options]
 
 Commands:
   start         Start server
@@ -69,13 +69,16 @@ Commands:
   statusline    Integrated statusline
   code          Execute claude command
   ui            Open the web UI in browser
-  -v, version   Show version information
-  -h, help      Show help information
 
-Example:
-  ccr start
-  ccr code "Write a Hello World"
-  ccr ui
+Options:
+  -c, --config <path>  Use config file (global, works with any command)
+  -v, --version        Show version information
+  -h, --help           Show help information
+
+Examples:
+  ccrm start
+  ccrm --config /path/to/config.json code "Write a Hello World"
+  ccrm ui
 `;
 
 async function waitForService(
@@ -184,7 +187,7 @@ async function main() {
           executeCodeCommand(commandArgs);
         } else {
           console.error(
-            "Service startup timeout, please manually run `ccr start` to start the service"
+            "Service startup timeout, please manually run `ccrm start` to start the service"
           );
           process.exit(1);
         }
@@ -266,7 +269,7 @@ async function main() {
             if (!(await waitForService(15000))) {
               // Wait a bit longer for the first start
               console.error(
-                "Service startup still failing. Please manually run `ccr start` to start the service and check the logs."
+                "Service startup still failing. Please manually run `ccrm start` to start the service and check the logs."
               );
               process.exit(1);
             }

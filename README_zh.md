@@ -16,6 +16,13 @@ Fork 自：https://github.com/musistudio/claude-code-router
 npm install -g @vitorcen/ccr-multi-key
 ```
 
+## CLI 使用
+
+- 可在命令前/后任意位置传入配置：
+  `ccrm -c /path/to/config.json code "..."` 
+  或 `ccrm code --config=/path/to/config.json "..."`
+- 指标统计会写回到该配置文件。
+
 ## 最小配置示例（不含统计字段）
 
 ```json
@@ -73,12 +80,11 @@ npm install -g @vitorcen/ccr-multi-key
           "err_msg": ""
         }
       ]
+
     }
   ]
 }
 ```
-
-## CLI 使用
 
 ## Gemini API 限速（官方数据）
 

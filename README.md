@@ -16,6 +16,13 @@ This fork focuses on provider key rotation and per-key metrics/diagnostics:
 npm install -g @vitorcen/ccr-multi-key
 ```
 
+## CLI
+
+- Use a custom config file anywhere in command:
+  `ccrm -c /path/to/config.json code "..."` 
+  or `ccrm code --config=/path/to/config.json "..."`
+- The router will write metrics back to that same file.
+
 ## Quick config example (no stats fields)
 
 ```json
@@ -78,8 +85,6 @@ npm install -g @vitorcen/ccr-multi-key
 }
 ```
 
-## CLI
-
 ## Gemini API rate limits (official)
 
 Important: Gemini rate limits are applied per project, not per API key. “Free tier x3” only aggregates if you use three separate projects (and thus three independent quotas). If all keys belong to the same project, quotas do NOT add up.
@@ -114,5 +119,5 @@ Notes:
   - Additional usage policies: https://ai.google.dev/gemini-api/docs/usage-policies
 - Free/Tier 1 numbers vary by model; tables above show the two most common text-out models.
 - Some models have additional dimensions (e.g., sessions for Live API, image/minute for Imagen). See the official table for details.
-- Use a custom config file anywhere in command: `ccr --config /path/to/config.json5 code "..."` or `ccr code --config=/path/to/config.json "..."`
+- Use a custom config file anywhere in command: `ccr --config /path/to/config.json code "..."` or `ccr code --config=/path/to/config.json "..."`
 - The router will write metrics back to that same file.

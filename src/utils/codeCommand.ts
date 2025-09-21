@@ -27,7 +27,7 @@ export async function executeCodeCommand(args: string[] = []) {
     settingsFlag = {
       statusLine: {
         type: "command",
-        command: "ccr statusline",
+        command: "ccrm statusline",
         padding: 0,
       }
     }
