@@ -1,4 +1,5 @@
 import Server from "@musistudio/llms";
+import { get_encoding } from "tiktoken";
 import { readConfigFile, writeConfigFile, backupConfigFile } from "./utils";
 import { checkForUpdates, performUpdate } from "./utils";
 import { join } from "path";
@@ -8,6 +9,28 @@ import { homedir } from "os";
 
 export const createServer = (config: any): Server => {
   const server = new Server(config);
+
+
+  server.app.post("/v1/messages/count_tokens", async (req, reply) => {
+    const body = req.body as any;
+    const messages = body?.messages || [];
+    let text = "";
+    for (const msg of messages) {
+      if (typeof msg.content === "string") {
+        text += msg.content;
+      } else if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part.type === "text") {
+            text += part.text;
+          }
+        }
+      }
+    }
+    const encoding = get_encoding("cl100k_base");
+    const tokens = encoding.encode(text);
+    encoding.free();
+    return { count: tokens.length };
+  });
 
   // Add endpoint to read config.json with access control
   server.app.get("/api/config", async (req, reply) => {
